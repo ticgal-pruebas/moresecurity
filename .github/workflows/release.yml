@@ -29,6 +29,7 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
+      name: ${{ steps.meta.outputs.name }}
       package: ${{ steps.package.outputs.file }}
     steps:
       - name: Checkout merge commit
@@ -57,14 +58,27 @@ jobs:
             echo "::error::Version '$version' is not valid semver"
             exit 1
           fi
+          # Display name: the literal 'name' of plugin_version_<key>() in setup.php
+          # (any number of words, e.g. "More Security", "Talent"). Names built with
+          # a function call (e.g. _n(...)) are not literals: fall back to the repo name.
+          name=$(awk -v fn="plugin_version_${PLUGIN}" '
+            index(tolower($0), tolower("function " fn "(")) { f = 1 }
+            f && /['"'"'"]name['"'"'"][[:space:]]*=>/ { print; exit }
+          ' setup.php | sed -nE "s/^[[:space:]]*['\"]name['\"][[:space:]]*=>[[:space:]]*(['\"])(.*)\1[[:space:]]*,[[:space:]]*\$/\2/p")
+          case "$name" in *\\*|*'$'*|'') name="" ;; esac
+          if [ -z "$name" ]; then
+            name="$(echo "${PLUGIN:0:1}" | tr '[:lower:]' '[:upper:]')${PLUGIN:1}"
+            echo "::warning::No literal plugin name in setup.php; using '$name'."
+          fi
           prerelease=false
           case "$version" in *-*) prerelease=true ;; esac
           {
             echo "version=$version"
             echo "tag=$version"
+            echo "name=$name"
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
-          echo "Plugin $PLUGIN version $version (prerelease: $prerelease)"
+          echo "Plugin $name ($PLUGIN) version $version (prerelease: $prerelease)"
 
       - name: Fail if the tag already exists
         env:
@@ -147,10 +161,10 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
           PRERELEASE: ${{ steps.meta.outputs.prerelease }}
           TARGET: ${{ github.event.pull_request.merge_commit_sha }}
-          PLUGIN: ${{ github.event.repository.name }}
+          NAME: ${{ steps.meta.outputs.name }}
         run: |
           set -euo pipefail
-          args=(--repo "$GITHUB_REPOSITORY" --target "$TARGET" --title "${PLUGIN} ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md")
+          args=(--repo "$GITHUB_REPOSITORY" --target "$TARGET" --title "${NAME} ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md")
           if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
           gh release create "$TAG" "${args[@]}" "$RUNNER_TEMP/dist/"*
 
@@ -193,6 +207,7 @@ jobs:
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag }}
           PACKAGE: ${{ needs.release.outputs.package }}
           VERSION: ${{ needs.release.outputs.version }}
+          NAME: ${{ needs.release.outputs.name }}
         run: |
           set -euo pipefail
           bash .github/scripts/glpi-upload.sh "dist/${PACKAGE}" "${VERSION}"
