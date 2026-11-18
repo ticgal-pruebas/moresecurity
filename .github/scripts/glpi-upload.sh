@@ -10,7 +10,9 @@
 #   GLPI_USER_TOKEN     API token (remote access key) of the GLPI user.
 #   GLPI_APP_TOKEN      Optional application token of the API client.
 #   GLPI_INSECURE_TLS   "true" to accept self-signed certificates (tests only).
-#   RELEASE_URL         Optional, stored in the document comment.
+#   RELEASE_URL         Optional, link to the GitHub release, stored in the document's
+#                       "Web link" field (must be a valid URL, 255 characters at most).
+#   NOTES_FILE          Optional, changelog entry used as the document comment.
 #   NAME                Plugin display name (e.g. "More Security"); the document
 #                       is named "<NAME> <version>". Defaults to the file name.
 
@@ -56,13 +58,28 @@ kill_session() {
 }
 trap 'kill_session; rm -rf "$tmp"' EXIT
 
-comment="Package built by GitHub Actions."
-[ -n "${RELEASE_URL:-}" ] && comment="${comment} Release: ${RELEASE_URL}"
+# Comment = changelog entry of the version.
+# The comment column is TEXT (65535 bytes): an entry above the safe limit is cut
+# at a line boundary and the note says the release has the full text.
+max_bytes=60000
+if [ -n "${NOTES_FILE:-}" ] && [ -s "$NOTES_FILE" ]; then
+  comment=$(cat "$NOTES_FILE")
+else
+  comment="Package built by GitHub Actions."
+fi
+truncated=false
+if [ "$(wc -c <<<"$comment")" -gt "$max_bytes" ]; then
+  # Here-strings (no pipe into head): an early-closing pipe would trip pipefail.
+  comment=$(sed '$d' <<<"$(head -c "$max_bytes" <<<"$comment")")
+  truncated=true
+  echo "::warning::Changelog entry exceeds ${max_bytes} bytes; the GLPI comment is truncated (the release has it in full)."
+fi
+[ "$truncated" = "true" ] && comment="${comment}"$'\n'"[...] truncated, the full text is in the GitHub release"
 
 doc_name="${NAME:+${NAME} ${version}}"
 doc_name="${doc_name:-${name%.tar.bz2}}"
-manifest=$(jq -nc --arg n "$doc_name" --arg c "$comment" --arg f "$name" \
-  '{input: {name: $n, comment: $c, _filename: [$f]}}')
+manifest=$(jq -nc --arg n "$doc_name" --arg c "$comment" --arg f "$name" --arg l "${RELEASE_URL:-}" \
+  '{input: ({name: $n, comment: $c, _filename: [$f]} + (if $l == "" then {} else {link: $l} end))}')
 
 echo "Uploading ${name}"
 code=$(curl "${curl_opts[@]}" -o "$tmp/doc.json" -w '%{http_code}' \

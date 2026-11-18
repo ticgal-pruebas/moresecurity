@@ -100,16 +100,18 @@ jobs:
         working-directory: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          # Section "## [VERSION]" up to the next "## [" heading.
+          # Entry of this version: "## [VERSION]" up to the next "## [" heading,
+          # without leading/trailing blank lines. Used as is by the release
+          # description and by the GLPI document comment.
           awk -v v="$VERSION" '
             /^## \[/ { if (found) exit; if (index($0, "## [" v "]") == 1) { found = 1; next } }
             found { print }
-          ' CHANGELOG.md | sed -e '/./,$!d' > "$RUNNER_TEMP/notes.md"
-          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+          ' CHANGELOG.md | sed -e '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > "$RUNNER_TEMP/changelog.md"
+          if [ ! -s "$RUNNER_TEMP/changelog.md" ]; then
             echo "::warning::No CHANGELOG.md section found for ${VERSION}; using the PR title."
-            printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/notes.md"
+            printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/changelog.md"
           fi
-          printf '\n\nMerged through #%s.\n' "$PR_NUMBER" >> "$RUNNER_TEMP/notes.md"
+          { cat "$RUNNER_TEMP/changelog.md"; printf '\nMerged through #%s.\n' "$PR_NUMBER"; } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
 
       - name: Set up PHP
@@ -176,6 +178,14 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Keep the changelog entry for the GLPI upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: ${{ runner.temp }}/changelog.md
+          if-no-files-found: error
+          retention-days: 1
+
   upload-glpi:
     name: Upload package to GLPI
     needs: release
@@ -198,6 +208,12 @@ jobs:
           name: package
           path: dist
 
+      - name: Download changelog entry
+        uses: actions/download-artifact@v4
+        with:
+          name: changelog
+          path: notes
+
       - name: Upload to GLPI
         env:
           GLPI_URL: ${{ vars.GLPI_URL }}
@@ -208,6 +224,7 @@ jobs:
           PACKAGE: ${{ needs.release.outputs.package }}
           VERSION: ${{ needs.release.outputs.version }}
           NAME: ${{ needs.release.outputs.name }}
+          NOTES_FILE: notes/changelog.md
         run: |
           set -euo pipefail
           bash .github/scripts/glpi-upload.sh "dist/${PACKAGE}" "${VERSION}"
