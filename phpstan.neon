@@ -1,0 +1,50 @@
+parameters:
+    parallel:
+        maximumNumberOfProcesses: 2
+    level: 5
+    bootstrapFiles:
+        - ../../vendor/autoload.php
+        - vendor/autoload.php
+        - setup.php
+    paths:
+        - src
+        - front
+        - hook.php
+        - setup.php
+        - tools/phpstan/rules
+    excludePaths:
+        - '**/vendor/*'
+        - '**/tests/*'
+        - '**/tools/*'
+    scanDirectories:
+        - ../../src
+        - tools/phpstan/rules
+    reportUnmatchedIgnoredErrors: false
+    treatPhpDocTypesAsCertain: false
+    ignoreErrors:
+        # Core constant defined in src/autoload/constants.php, which cannot be
+        # added to the bootstrap without breaking the analysis.
+        -
+            message: '#Constant GLPI_(SESSION_DIR|PLUGIN_DOC_DIR) not found#'
+            identifier: constant.notFound
+rules:
+    - GlpiProject\Tools\PHPStan\Rules\GlobalVarTypeRule
+services:
+    -
+        class: CustomPHPStanRules\HardcodedPasswordRule
+        tags: [phpstan.rules.rule]
+    -
+        class: CustomPHPStanRules\UnsafeFunctionsRule
+        tags: [phpstan.rules.rule]
+    -
+        class: CustomPHPStanRules\InputValidationRule
+        tags: [phpstan.rules.rule]
+    -
+        class: CustomPHPStanRules\SensitiveInfoExposureRule
+        tags: [phpstan.rules.rule]
+    -
+        class: CustomPHPStanRules\SqlInjectionRule
+        tags: [phpstan.rules.rule]
+    -
+        class: CustomPHPStanRules\PermissionControlRule
+        tags: [phpstan.rules.rule]

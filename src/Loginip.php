@@ -1,0 +1,357 @@
+<?php
+
+/**
+ * -------------------------------------------------------------------------
+ * More Security plugin for GLPI
+ * Copyright (C) 2026 by the TICGAL Team.
+ * https://www.tic.gal
+ * -------------------------------------------------------------------------
+ * LICENSE
+ * This file is part of the More Security plugin.
+ * More Security plugin is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ * More Security plugin is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * You should have received a copy of the GNU General Public License
+ * along with More Security. If not, see <http://www.gnu.org/licenses/>.
+ * -------------------------------------------------------------------------
+ * @author    the TICGAL team
+ * @copyright Copyright (c) 2022-2026 TICGAL team
+ * @license   AGPL License 3.0 or (at your option) any later version
+ * @link      https://www.tic.gal
+ * @package   More Security
+ * @since     2022
+ *            http://www.gnu.org/licenses/agpl-3.0-standalone.html
+ * -------------------------------------------------------------------------
+ */
+
+namespace GlpiPlugin\Moresecurity;
+
+use CommonDBTM;
+use DBConnection;
+use DBmysql;
+use Glpi\DBAL\QueryExpression;
+use Glpi\DBAL\QueryFunction;
+use Migration;
+use RuntimeException;
+
+if (!defined('GLPI_ROOT')) {
+    echo "Sorry. You can't access directly to this file";
+    return;
+}
+
+class Loginip extends CommonDBTM
+{
+    public const TIME_WINDOW = Limiter::TIME_WINDOW;
+
+    public static function isBlocked(string $ip): bool
+    {
+        $ip = Limiter::bucketIp($ip);
+        return Limiter::isBlockedNow(self::getTable(), ['ip' => $ip]);
+    }
+
+    /**
+     * Bloqueo por IP vigente Y activo en la configuración (con
+     * `ip_max_attempts` = 0 la protección está desactivada).
+     */
+    public static function isIpBlockActive(string $ip): bool
+    {
+        $ip = Limiter::bucketIp($ip);
+        $config = Config::getInstance();
+
+        return (int) $config->fields['ip_max_attempts'] > 0 && self::isBlocked($ip);
+    }
+
+    /**
+     * Cuenta una denegación por geobloqueo contra el presupuesto de la IP
+     * (cubo anónimo, bajo el mismo bloqueo que reserve()).
+     */
+    public static function countGeoDenial(string $ip): void
+    {
+        $ip = Limiter::bucketIp($ip);
+        $config = Config::getInstance();
+        if ((int) $config->fields['ip_max_attempts'] <= 0) {
+            return;
+        }
+
+        Limiter::withLocks(['ip:' . Limiter::bucketIp($ip)], static function () use ($ip): void {
+            self::addTry(Limiter::ANON_BUCKET, $ip);
+            self::applyIpBlock($ip);
+        });
+    }
+
+    /**
+     * ¿Esta IP ya ha usado demasiadas identidades distintas en la ventana?
+     * Si es así, las identidades nuevas no crean filas (MS-08) y comparten
+     * el cubo anónimo, que sigue sumando al presupuesto de la IP.
+     */
+    public static function isOverflow(string $login, string $ip): bool
+    {
+        $ip = Limiter::bucketIp($ip);
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $window = [
+            'ip'       => $ip,
+            'last_try' => ['>', Limiter::windowStart()],
+        ];
+        $identities = $DB->request(['COUNT' => 'c', 'FROM' => self::getTable(), 'WHERE' => $window])->current();
+        $known      = $DB->request(['COUNT' => 'c', 'FROM' => self::getTable(), 'WHERE' => $window + ['login' => $login]])->current();
+
+        return (int) $known['c'] === 0
+            && (int) $identities['c'] >= Limiter::MAX_IDENTITIES_PER_IP;
+    }
+
+    /**
+     * Limpia solo la pareja (login, ip) que acaba de autenticarse
+     * correctamente. No toca la actividad de otras cuentas en la misma IP
+     * (UC-04): compartir IP no debe borrar la señal de ataque contra otros.
+     */
+    public static function clearIpTryForLogin(string $login, string $ip): void
+    {
+        $ip = Limiter::bucketIp($ip);
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $DB->update(self::getTable(), [
+            'ip_try'   => 0,
+            'last_try' => null,
+            'blocked'  => null,
+        ], ['login' => $login, 'ip' => $ip]);
+    }
+
+    /**
+     * Reinicia los contadores de IP distintas de una cuenta (desbloqueo
+     * administrativo). No levanta el bloqueo de la IP en sí.
+     */
+    public static function clearTriesForLogin(string $login): void
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $DB->update(self::getTable(), [
+            'ip_try'   => 0,
+            'last_try' => null,
+        ], ['login' => $login]);
+    }
+
+    /**
+     * Desbloqueo administrativo de una IP: limpia bloqueo y contadores de
+     * todas sus filas.
+     */
+    public static function unblock(string $ip): bool
+    {
+        $ip = Limiter::bucketIp($ip);
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $DB->update(self::getTable(), [
+            'ip_try'   => 0,
+            'last_try' => null,
+            'blocked'  => null,
+        ], ['ip' => $ip]);
+
+        return true;
+    }
+
+    public static function getBlocked(int $limit = 100): array
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        return iterator_to_array($DB->request([
+            'SELECT'  => [
+                'ip',
+                Limiter::maxOf('blocked', 'blocked'),
+                Limiter::maxOf('last_try', 'last_try'),
+                Limiter::secondsUntil(Limiter::maxOf('blocked')),
+            ],
+            'FROM'    => self::getTable(),
+            'WHERE'   => Limiter::activeBlockCriteria(),
+            'GROUPBY' => 'ip',
+            'ORDER'   => 'blocked DESC',
+            'LIMIT'   => $limit,
+        ]), false);
+    }
+
+    /**
+     * Cuenta el intento (ya reservado) de la pareja login+ip. El incremento
+     * y el reinicio por inactividad ocurren en una sola sentencia atómica
+     * (UNIQUE KEY login_ip).
+     */
+    public static function addTry(string $login, string $ip): void
+    {
+        $ip = Limiter::bucketIp($ip);
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $table   = self::getTable();
+        $stale   = "`last_try` IS NOT NULL AND `last_try` < (NOW() - INTERVAL " . (int) self::TIME_WINDOW . " SECOND)";
+
+        // `last_try` va el último: los operandos se evalúan de izquierda a derecha.
+        $DB->doQuery(
+            "INSERT INTO " . DBmysql::quoteName($table) . " (`login`, `ip`, `ip_try`, `last_try`)
+             VALUES (" . DBmysql::quoteValue($login) . ", " . DBmysql::quoteValue($ip) . ", 1, NOW())
+             ON DUPLICATE KEY UPDATE
+                `ip_try`   = IF($stale, 1, `ip_try` + 1),
+                `blocked`  = IF($stale, NULL, `blocked`),
+                `last_try` = NOW()",
+        ) or throw new RuntimeException('More Security: could not record the attempt');
+    }
+
+    /**
+     * Bloqueo por IP: suma (en SQL) los intentos de todas las parejas
+     * login+ip de la ventana, sea cual sea la cuenta probada, y bloquea
+     * todas las filas de la IP con backoff si se alcanza el umbral.
+     */
+    public static function applyIpBlock(string $ip): void
+    {
+        $ip = Limiter::bucketIp($ip);
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $config = Config::getInstance();
+        $max    = (int) $config->fields['ip_max_attempts'];
+        if ($max <= 0) {
+            return;
+        }
+
+        $total = self::sumTriesForIp($ip);
+        if ($total < $max) {
+            return;
+        }
+
+        $delay = Limiter::backoffDelay(
+            (int) $config->fields['ip_time_blocked'],
+            $total - $max,
+            (int) ($config->fields['ip_max_time_blocked'] ?? 0),
+        );
+
+        $DB->update(self::getTable(), [
+            'blocked' => Limiter::fromNow($delay),
+        ], ['ip' => $ip]);
+    }
+
+    private static function sumTriesForIp(string $ip): int
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $row = $DB->request([
+            'SELECT' => QueryFunction::sum('ip_try', false, 'total'),
+            'FROM'   => self::getTable(),
+            'WHERE'  => ['ip' => $ip, 'last_try' => ['>', Limiter::windowStart()]],
+        ])->current();
+
+        return (int) ($row['total'] ?? 0);
+    }
+
+    public static function countDistinctIpsForLogin(string $login): int
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $row = $DB->request([
+            'SELECT' => QueryFunction::count('ip', true, 'c'),
+            'FROM'   => self::getTable(),
+            'WHERE'  => ['login' => $login, 'last_try' => ['>', Limiter::windowStart()]],
+        ])->current();
+
+        return (int) ($row['c'] ?? 0);
+    }
+
+    public static function purge(int $retention_days, int $batch = 1000, int $max_batches = 50): int
+    {
+        return Retention::purgeTable(self::getTable(), $retention_days, $batch, $max_batches);
+    }
+
+    public static function install(Migration $migration): void
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        $table = self::getTable();
+        if (!$DB->tableExists($table)) {
+            $migration->displayMessage("Installing $table");
+            $query = "CREATE TABLE IF NOT EXISTS $table (
+                `id` int {$default_key_sign} NOT NULL AUTO_INCREMENT,
+                `login` varchar(255) DEFAULT NULL,
+                `ip` varchar(45) DEFAULT NULL,
+                `ip_try` int NOT NULL DEFAULT '0',
+                `last_try` TIMESTAMP NULL DEFAULT NULL,
+                `blocked` TIMESTAMP NULL DEFAULT NULL,
+                PRIMARY KEY (`id`),
+                KEY `login` (`login`),
+                KEY `ip` (`ip`),
+                KEY `blocked` (`blocked`),
+                KEY `last_try` (`last_try`),
+                UNIQUE KEY `login_ip` (`login`, `ip`)
+            ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation} ROW_FORMAT=DYNAMIC;";
+
+            $DB->doQuery($query) or throw new RuntimeException($DB->error());
+        } else {
+            // El UNIQUE solo puede crearse si no hay parejas duplicadas.
+            self::mergeDuplicates($table);
+            $migration->addKey($table, ['login', 'ip'], 'login_ip', 'UNIQUE');
+            $migration->addKey($table, 'last_try');
+            $migration->migrationOneTable($table);
+            Limiter::capLegacyBlocks($table);
+        }
+    }
+
+    /**
+     * Fusiona filas duplicadas (login, ip) antes de crear el índice único:
+     * suma ip_try y conserva el last_try y el blocked más recientes.
+     */
+    private static function mergeDuplicates(string $table): void
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $dups = iterator_to_array($DB->request([
+            'SELECT'  => ['login', 'ip'],
+            'FROM'    => $table,
+            'GROUPBY' => ['login', 'ip'],
+            'HAVING'  => [new QueryExpression('COUNT(*) > 1')],
+        ]), false);
+        foreach ($dups as $dup) {
+            $rows = iterator_to_array($DB->request([
+                'FROM'  => $table,
+                'WHERE' => ['login' => $dup['login'], 'ip' => $dup['ip']],
+                'ORDER' => ['id ASC'],
+            ]), false);
+            $keep = array_shift($rows);
+            $ip_try   = (int) $keep['ip_try'];
+            $last_try = $keep['last_try'];
+            $blocked  = $keep['blocked'];
+            foreach ($rows as $extra) {
+                $ip_try += (int) $extra['ip_try'];
+                if ($extra['last_try'] !== null && ($last_try === null || $extra['last_try'] > $last_try)) {
+                    $last_try = $extra['last_try'];
+                }
+                if ($extra['blocked'] !== null && ($blocked === null || $extra['blocked'] > $blocked)) {
+                    $blocked = $extra['blocked'];
+                }
+                $DB->delete($table, ['id' => $extra['id']]);
+            }
+            $DB->update($table, [
+                'ip_try'   => $ip_try,
+                'last_try' => $last_try,
+                'blocked'  => $blocked,
+            ], ['id' => $keep['id']]);
+        }
+    }
+
+    public static function uninstall(Migration $migration): void
+    {
+        $migration->dropTable(self::getTable());
+    }
+}

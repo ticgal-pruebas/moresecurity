@@ -1,5 +1,34 @@
 #!/bin/bash
 
+#
+# -------------------------------------------------------------------------
+# More Security plugin for GLPI
+# Copyright (C) 2026 by the TICGAL Team.
+# https://www.tic.gal
+# -------------------------------------------------------------------------
+# LICENSE
+# This file is part of the More Security plugin.
+# More Security plugin is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+# More Security plugin is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# You should have received a copy of the GNU General Public License
+# along with More Security. If not, see <http://www.gnu.org/licenses/>.
+# -------------------------------------------------------------------------
+# @author    the TICGAL team
+# @copyright Copyright (c) 2022-2026 TICGAL team
+# @license   AGPL License 3.0 or (at your option) any later version
+# @link      https://www.tic.gal
+# @package   More Security
+# @since     2022
+#            http://www.gnu.org/licenses/agpl-3.0-standalone.html
+# -------------------------------------------------------------------------
+#
+
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 PARENT_FOLDER_PATH=$(dirname "$SCRIPT_DIR")
 PLUGINNAME=$(basename "$PARENT_FOLDER_PATH")
@@ -26,14 +55,16 @@ fi
 # Clean existing file
 rm -f $LOCALES/$POTFILE && touch $LOCALES/$POTFILE >/dev/null
 
+# LC_ALL=C evita que las referencias de Twig salgan como "entrada estándar:N".
+export LC_ALL=C
 echo Searching PHP files...
 # Append locales from PHP
-xgettext $(find -type f -name "*.php") -o $LOCALES/$POTFILE -L PHP --add-comments=TRANS --from-code=UTF-8 --force-po --join-existing \
+xgettext $(find . \( -path ./vendor -o -path ./tools -o -path ./docs \) -prune -o -type f -name "*.php" -print) -o $LOCALES/$POTFILE -L PHP --add-comments=TRANS --from-code=UTF-8 --force-po --join-existing \
     --keyword=__:1,2t -d $PLUGINNAME --copyright-holder "TICgal" >/dev/null 2>&1
 
 echo Searching JS files...
 # Append locales from JavaScript
-xgettext $(find -type f -name "*.js") -o $LOCALES/$POTFILE -L JavaScript --add-comments=TRANS --from-code=UTF-8 --force-po --join-existing \
+xgettext $(find . \( -path ./vendor -o -path ./tools -o -path ./docs \) -prune -o -type f -name "*.js" -print) -o $LOCALES/$POTFILE -L JavaScript --add-comments=TRANS --from-code=UTF-8 --force-po --join-existing \
     --keyword=__:1,2t -d $PLUGINNAME --copyright-holder "TICgal" >/dev/null 2>&1
 
 echo Searching TWIG files...

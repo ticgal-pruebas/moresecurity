@@ -10,74 +10,104 @@
 Adds brute-force protection to the GLPI login and password-reset forms.
 ### Setup
 Install it like any other GLPI plugin from Marketplace, or download and install it in the plugin folder.
+### Compatibility
+More Security 3.x requires GLPI 12.0 (12.0.0 or later, below 12.1.0). Use the 2.x releases on GLPI 11.
 ### How to use
 Once activated, More Security automatically protects the login and "forgotten password" forms — no
 extra action is needed from end users. Administrators configure the thresholds from the plugin's
 **More Security** tab on the GLPI **Setup > General** configuration page.
 ### Additional features
-- Limit the number of failed login attempts per account, with a configurable temporary block
-- Limit the number of password reset attempts per email address, with a configurable temporary block
-- Per-IP attempt tracking with temporary IP blocking, independent of the per-account block
-- IP whitelist to exempt trusted networks from IP-based blocking
-- Distributed attack detection: blocks an account when failed attempts come from too many distinct IPs
-- Geoblocking: allow or deny logins by the country the client IP resolves to
+- Limit the number of failed login attempts per account, with a temporary block and exponential backoff
+- Limit the number of password reset attempts per email address, with a temporary block
+- Per-IP attempt tracking with temporary IP blocking, independent of the per-account block (shared by login and password reset)
+- IP whitelist (single IPs, IPv6 and CIDR ranges) to exempt trusted networks from the checks
+- Distributed attack detection: blocks an account for a bounded time when attempts come from too many distinct IPs
+- Administrators can unblock accounts, IPs and password reset requests from the configuration tab
+- Daily automatic action that purges old attempt records
+- Geoblocking: allow or deny logins by country, using DB-IP's free Lite database
+- Trusted reverse proxy support, so the real client IP is used behind a proxy or load balancer
+- Security log (Administration > Security log) with every failed attempt, a per-account/IP summary and a dedicated read-only permission
+- Dashboard cards (top attacking IPs, most targeted accounts, top offending countries) and a ready-made "More Security" dashboard
+- Bulk unblock of accounts, IPs and password reset requests
 
 ### Configuration options
 All settings live on the **More Security** tab of **Setup > General**. A value of `0` on any
-attempt-count field disables that particular protection.
+attempt-count field disables that particular protection. Block durations must be at least one second.
 
 #### Login attempts
-- **Number of attempts (0 = disabled)** — how many failed logins an account can have before it's
-  blocked.
-- **Access time blocked** — how long the account stays blocked once it runs out of attempts. Pick
-  a fixed duration (5 minutes up to 1 day), or **Permanent**, which never expires on its own and
-  needs an admin to unblock it manually (see "Permanent blocks" below).
-- **Attempt counter reset window** — if this much time passes since the last failed attempt
-  without hitting the limit, the attempt counter resets to zero instead of continuing to
-  accumulate.
+- **Number of attempts** — how many login attempts an account can make before it is blocked. Each
+  attempt is counted when it starts; a correct login releases it. It must be greater than "Max
+  attempts per IP", otherwise it is adjusted automatically.
+- **Access time blocked** — base block duration. Each further attempt above the threshold doubles
+  the wait, up to the **backoff cap** (0 = no cap other than a hard limit of one year).
+- Counters reset after 12 hours without activity.
 
 #### IP blocking
-- **Trusted reverse proxy IPs (comma-separated)** — only needed if GLPI sits behind a reverse
-  proxy or load balancer. The `X-Forwarded-For` header is trusted only when the direct connection
-  comes from one of these IPs, e.g. `10.0.0.1,10.0.0.2`; leave empty to always use the direct
-  connection IP.
-- **Max attempts per IP (0 = disabled)** — how many failed attempts from a single IP — against any
-  account for logins, or across any email address for password resets — can happen before that IP
-  itself is blocked, independent of the per-account/per-email block above. One shared policy
-  covers both login and password-reset abuse from that IP.
-- **IP threshold (0 = disabled)** — distributed-attack protection: if failed logins for the same
-  account come from at least this many distinct IPs (within the reset window), the account is
-  permanently blocked, regardless of the "Number of attempts" setting. This block is always
-  permanent and always needs a manual unblock.
-- **IP block duration** — how long a blocked IP stays blocked (same duration choices as "Access
-  time blocked", including **Permanent**), whether it was blocked for login or password-reset
-  abuse.
+- **Max attempts per IP** — how many attempts from one IP (against any account, or password reset
+  requests for any email) before the IP itself is blocked, with the same backoff as above.
+- **IP block duration / cap** — duration and backoff cap of the IP block.
+- **IP threshold** — if attempts for the same account come from at least this many distinct IPs
+  (within the 12 h window) the account is blocked for the backoff cap (one day by default). It
+  works even if "Number of attempts" is 0.
 
-#### Password reset attempts
-- **Attempts for Password Reset (0 = disabled)** — how many password reset requests a given email
-  address can make before access is blocked.
-- **Access time blocked for Password Reset** — how long password-reset access stays blocked once
-  it runs out of attempts (same duration choices, including **Permanent**).
-
-Password-reset requests from a single IP (across any email address) count toward the same
-"Max attempts per IP" / "IP block duration" policy described above under login attempts — this
-is what stops someone from blocking a specific email's reset access just by repeatedly requesting
-resets for it: the attacker's IP gets blocked well before the email-level limit is ever reached.
+By default the client IP is the direct connection address (`REMOTE_ADDR`). Behind a reverse proxy
+every client would share one budget: list the proxy under **Trusted reverse proxy IPs** and the
+`X-Forwarded-For` header is honoured, but only when the request comes from one of those proxies.
+Do not add the proxy to the whitelist unless you accept exempting all of its clients.
 
 #### Geoblocking
-- **Mode** — `Disabled`, `Only allow these countries`, or `Block these countries`.
-- **Countries** — the country list the mode above applies to.
-- IPs on the plugin's whitelist always skip this check, same as IP-based lockout. If the client
-  IP can't be resolved to a country (private/local address, or the database isn't available yet),
-  the login is always allowed through — geoblocking never locks everyone out on a data problem.
-- The country database is [DB-IP](https://db-ip.com) Lite (Country), refreshed automatically once
-  a month by an automatic action, and also on first install. IP geolocation data by DB-IP,
-  licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- **Mode** — *Disabled*, *Only allow these countries* or *Block these countries*. Applies to logins
+  only; whitelisted IPs skip it. Denied logins are written to the Security log and count against the
+  per-IP budget, so a persistent origin ends up blocked.
+- **Countries** — ISO 3166-1 countries the mode applies to.
+- Country data comes from DB-IP's free *IP to Country Lite* database (CC BY 4.0), downloaded into
+  the GLPI plugin documents folder by the monthly automatic action *updatedb*. Until it has been
+  downloaded, or for private, reserved and unresolvable addresses, geoblocking **fails open**: the
+  login is allowed through. Requires the `geoip2/geoip2` and `league/iso3166` libraries (shipped
+  with the release package; run `composer install` when working from a git checkout).
 
-#### Permanent blocks
-Any duration field set to **Permanent** (as well as the IP threshold's distributed-attack block,
-which is always permanent) never expires on its own. When at least one login, IP, or password-reset
-email/IP is under a permanent block, a matching section — "Permanently blocked accounts",
-"Permanently blocked IPs", "Permanently blocked password reset requests", or "Permanently blocked
-IPs (password reset)" — appears further down the same config page, right under the section it
-belongs to, listing the blocked entries with an **Unblock** button next to each one.
+#### Password reset attempts
+- **Attempts for Password Reset** — requests allowed per email address before it is blocked.
+- **Access time blocked for Password Reset** — duration of that block.
+
+Password reset requests also count toward the per-IP budget, so an attacker cannot lock an email's
+reset access without first getting their own IP blocked.
+
+#### Unblocking
+Currently blocked accounts, IPs and password reset requests are listed at the bottom of the
+configuration tab with an **Unblock** button, a checkbox for **Unlock selected** and an **Unlock
+all** button (requires the `config` update right; every unblock is written to the configuration
+history). Blocks always expire on their own.
+
+#### Security log
+**Administration > Security log** lists every failed login, every admitted password reset request
+and every geoblocked login, with type, login/email, matching user, IP and country. The **Summary**
+tab groups them by type, identifier and IP. Access is controlled by the *More Security > Security
+log* right of each profile; on installation it is granted (read) to the profiles that can already
+edit the GLPI configuration.
+
+#### Data retention
+The automatic action *Purge* (daily) removes attempt records inactive for more than 7 days that
+are not under an active block. The automatic action *PurgeLogs* (daily) removes Security log
+entries older than its parameter (30 days by default). The log keeps at most 200 entries per IP and hour, so an attacker cannot inflate it; blocking decisions do not depend on the log. Login names, emails and IPs are personal
+data: adjust both actions to your retention policy.
+
+### Scope and limits
+- **Channels covered.** The protections (attempt limits, IP blocking, whitelist, geoblocking) apply to the GLPI
+  login and password-reset forms and to the other channels that verify a password: CalDAV (`/caldav.php`, HTTP
+  Basic), the legacy REST API (`apirest.php` and `api.php/v1`: `initSession` with credentials, and `lostPassword`)
+  and the OAuth *password* grant of the High-Level API (`api.php/token`). The legacy REST API is only checked while
+  it is enabled, since otherwise the core never verifies a password there; the OAuth password grant is always
+  checked, because the core serves it even with the APIs disabled. An attempt is released only when GLPI actually
+  authenticated that account, never because of the HTTP status of the response.
+- **Channels not covered.** The "remember me" cookie and single sign-on (CAS, x509, remote user) do not verify a GLPI
+  password, so there is nothing to count. Authentication with an API *user token* is not covered either: it is a
+  random secret, not a password.
+- **The Security log is global.** Attempts happen before a session and an entity exist, so the log and the
+  dashboard cards are not filtered by entity. Grant the *More Security > Security log* right (and the dashboard
+  cards, which require it) only to profiles that may see the logins, emails and IPs of the whole instance.
+- **Lockouts can be provoked.** Counters key on the identity typed in the form, whether or not it exists, so someone
+  who knows a login or email can trigger its temporary account lockout or reset block ("distinct IPs" detection makes
+  this easier by design). Keep block durations short (*Time blocked*, *Time reset*) and use the whitelist for trusted
+  networks. IPv6 addresses are counted per /64 prefix.
+

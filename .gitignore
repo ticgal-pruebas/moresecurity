@@ -1,0 +1,6 @@
+/vendor/
+/composer.lock
+docs/*
+!docs/manual/
+docs/manual/*
+!docs/manual/.bookstack-map.json

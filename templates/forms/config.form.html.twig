@@ -1,50 +1,65 @@
 {#
-# -------------------------------------------------------------------------
-# More Security plugin for GLPI
-# Copyright (C) 2024-2026 by the TICGAL Team.
-# https://www.tic.gal
-# -------------------------------------------------------------------------
-# LICENSE
-# This file is part of the More Security plugin.
-# More Security plugin is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3 of the License, or
-# (at your option) any later version.
-# More Security plugin is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-# You should have received a copy of the GNU General Public License
-# along with More Security. If not, see <http://www.gnu.org/licenses/>.
-# --------------------------------------------------------------------------
-# @package   More Security
-# @author    the TICgal team
-# @copyright Copyright (c) 2024-2026 TICGAL team
-# @license   AGPL License 3.0 or (at your option) any later version
-#                 http://www.gnu.org/licenses/agpl-3.0-standalone.html
-# @link      https://www.tic.gal
-# @since     2024
-# -------------------------------------------------------------------------
-#}
+ # -------------------------------------------------------------------------
+ # More Security plugin for GLPI
+ # Copyright (C) 2026 by the TICGAL Team.
+ # https://www.tic.gal
+ # -------------------------------------------------------------------------
+ # LICENSE
+ # This file is part of the More Security plugin.
+ # More Security plugin is free software; you can redistribute it and/or modify
+ # it under the terms of the GNU General Public License as published by
+ # the Free Software Foundation; either version 3 of the License, or
+ # (at your option) any later version.
+ # More Security plugin is distributed in the hope that it will be useful,
+ # but WITHOUT ANY WARRANTY; without even the implied warranty of
+ # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ # GNU General Public License for more details.
+ # You should have received a copy of the GNU General Public License
+ # along with More Security. If not, see <http://www.gnu.org/licenses/>.
+ # -------------------------------------------------------------------------
+ # @author    the TICGAL team
+ # @copyright Copyright (c) 2022-2026 TICGAL team
+ # @license   AGPL License 3.0 or (at your option) any later version
+ # @link      https://www.tic.gal
+ # @package   More Security
+ # @since     2022
+ #            http://www.gnu.org/licenses/agpl-3.0-standalone.html
+ # -------------------------------------------------------------------------
+ #}
 
 {% import 'components/form/fields_macros.html.twig' as fields %}
-{% import 'components/form/buttons.html.twig' as buttons %}
 
 {% if options is not defined %}
 {% set options = {} %}
 {% endif %}
+{# buttons.html.twig reads `params` directly: define it for strict-variables environments #}
+{% set params = params|default({}) %}
 
 {{ include('components/form/header.html.twig', {'in_twig': true, 'no_header': true}) }}
 
-<div class="row">
+{% macro ribbon_header(title, icon = 'ti-shield-plus') %}
+    <div class="ribbon ribbon-bookmark ribbon-top ribbon-start bg-blue s-1">
+        <i class="ti {{ icon }} fs-1"></i>
+    </div>
+    <h4 class="card-title ps-5">{{ title }}</h4>
+{% endmacro %}
+
+{# Dos columnas: etiquetas más estrechas para que los campos no se partan #}
+{% set half_options = options|merge({'full_width': false, 'field_class': 'col-12', 'label_class': 'col-5', 'input_class': 'col-7'}) %}
+<div class="row pt-3">
+    <div class="col-12 col-xl-6 mb-4">
     {# Login attempts #}
-    <div class="row ps-4">
-        <h3>{{ __("Login attempts", 'moresecurity') }}</h3>
+    <div class="card m-n2 border-0 shadow-none">
+        <div class="card-header">
+            {{ _self.ribbon_header(__("Login attempts", 'moresecurity'), 'ti-shield-plus') }}
+        </div>
+        <div class="card-body">
+            <div class="row">
         {{ fields.numberField(
             'number_attempts',
             item.fields['number_attempts'],
             __("Number of attempts", 'moresecurity'),
-            options|merge({
+            half_options|merge({
                 'min': 0,
                 'max': 100,
                 'step': 1
@@ -54,7 +69,7 @@
             'time_blocked',
             item.fields['time_blocked'],
             __("Access time blocked", 'moresecurity'),
-            options|merge({
+            half_options|merge({
                 'display_emptychoice': false,
             })
         ) }}
@@ -62,15 +77,53 @@
             'max_time_blocked',
             item.fields['max_time_blocked'],
             __("Max access time blocked (backoff cap)", 'moresecurity'),
-            options|merge({
+            half_options|merge({
                 'display_emptychoice': false,
             })
         ) }}
+            </div>
+        </div>
+    </div>
+    </div>
+    <div class="col-12 col-xl-6 mb-4">
+    {# Password reset #}
+    <div class="card m-n2 border-0 shadow-none">
+        <div class="card-header">
+            {{ _self.ribbon_header(__("Password reset attempts", 'moresecurity'), 'ti-shield-plus') }}
+        </div>
+        <div class="card-body">
+            <div class="row">
+        {{ fields.numberField(
+            'attempts_reset',
+            item.fields['attempts_reset'],
+            __("Attempts for Password Reset", 'moresecurity'),
+            half_options|merge({
+                'min': 0,
+                'max': 100,
+                'step': 1
+            })
+        ) }}
+        {{ fields.dropdownTimestampField(
+            'time_reset',
+            item.fields['time_reset'],
+            __("Access time blocked for Password Reset", 'moresecurity'),
+            half_options|merge({
+                'display_emptychoice': false,
+            })
+        ) }}
+            </div>
+        </div>
+    </div>
     </div>
 
     {# IP blocking #}
-    <div class="row ps-4">
-        <h3>{{ __("IP blocking", 'moresecurity') }}</h3>
+    <div class="col-12 mb-4">
+    <div class="card m-n2 border-0 shadow-none">
+        <div class="card-header">
+            {{ _self.ribbon_header(__("IP blocking", 'moresecurity'), 'ti-shield-down') }}
+        </div>
+        <div class="card-body">
+            <div class="row">
         {{ fields.numberField(
             'ip_max_attempts',
             item.fields['ip_max_attempts'],
@@ -107,31 +160,189 @@
                 'step': 1
             })
         ) }}
+            </div>
+        </div>
+    </div>
     </div>
 
-    {# Password reset #}
-    <div class="row ps-4">
-        <h3>{{ __("Password reset attempts", 'moresecurity') }}</h3>
-        {{ fields.numberField(
-            'attempts_reset',
-            item.fields['attempts_reset'],
-            __("Attempts for Password Reset", 'moresecurity'),
+{# Bloqueos vigentes: tarjeta única con filtros, orden y paginación #}
+{% if can_see_blocks %}
+<div id="ms-active-blocks-card" class="row mt-4 mb-4" data-testid="ms-active-blocks">
+    <div class="col-12">
+        <div class="card m-n2 border-0 shadow-none">
+            <div class="card-header">
+                {{ _self.ribbon_header(__('Active blocks', 'moresecurity'), 'ti-shield-cancel') }}
+            </div>
+            <div class="card-body">
+                <p class="text-muted">
+                    {{ __('Every currently blocked account, IP, or email. Lift one early with Unblock, or select several and unlock them together.', 'moresecurity') }}
+                </p>
+                {% for key in blocked_filtered_keys %}
+                    <input type="hidden" name="unblock_all_items[]" value="{{ key }}" />
+                {% endfor %}
+                <div class="d-flex justify-content-end gap-2 mb-2">
+                    <button type="submit" name="unblock_selected" value="1" class="btn btn-outline-secondary btn-sm"
+                        data-confirm="{{ __('Unlock the selected rows?', 'moresecurity') }}"
+                        data-empty="{{ __('Select at least one row first.', 'moresecurity') }}">
+                        {{ __('Unlock selected', 'moresecurity') }}
+                    </button>
+                    <button type="submit" name="unblock_all" value="1" class="btn btn-outline-secondary btn-sm"
+                        data-confirm="{{ __('Unlock every currently visible/filtered row?', 'moresecurity') }}">
+                        {{ __('Unlock all', 'moresecurity') }}
+                    </button>
+                </div>
+                {{ include('components/datatable.html.twig', {
+                    'filters': blocked_filters,
+                    'sort': blocked_sort,
+                    'order': blocked_order,
+                    'start': blocked_start,
+                    'is_tab': true,
+                    'items_id': item.fields['id']|default(0),
+                    'additional_params': blocked_filter_query,
+                    'limit': blocked_limit,
+                    'columns': {
+                        'select': {'label': '', 'no_filter': true, 'nosort': true},
+                        'type': __('Type', 'moresecurity'),
+                        'user': __('User', 'moresecurity'),
+                        'login': __('Login', 'moresecurity'),
+                        'email': __('Email', 'moresecurity'),
+                        'ip': __('IP', 'moresecurity'),
+                        'blocked_at': __('Blocked at', 'moresecurity'),
+                        'remaining': __('Remaining', 'moresecurity'),
+                        'action': {'label': '', 'no_filter': true, 'nosort': true},
+                    },
+                    'formatters': {
+                        'select': 'raw_html',
+                        'user': 'raw_html',
+                        'action': 'raw_html',
+                    },
+                    'entries': all_blocked,
+                    'total_number': all_blocked_total,
+                    'filtered_number': blocked_filtered_number,
+                }) }}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+    {# Trusted reverse proxies #}
+    <div class="col-12 mb-4">
+    <div class="card m-n2 border-0 shadow-none">
+        <div class="card-header">
+            {{ _self.ribbon_header(__("Trusted proxies", 'moresecurity'), 'ti-server') }}
+        </div>
+        <div class="card-body">
+            <div class="row">
+        {{ fields.textField(
+            'trusted_proxies',
+            item.fields['trusted_proxies']|default(''),
+            __("Trusted reverse proxy IPs", 'moresecurity'),
             options|merge({
-                'min': 0,
-                'max': 100,
-                'step': 1
+                'helper': __("Comma-separated (e.g. 10.0.0.1,10.0.0.2). X-Forwarded-For is only honoured when the request comes from one of these.", 'moresecurity'),
             })
         ) }}
-        {{ fields.dropdownTimestampField(
-            'time_reset',
-            item.fields['time_reset'],
-            __("Access time blocked for Password Reset", 'moresecurity'),
+            </div>
+        </div>
+    </div>
+    </div>
+
+    {# Geoblocking #}
+    <div class="col-12 mb-4">
+    <div class="card m-n2 border-0 shadow-none" data-testid="ms-geoblocking-card">
+        <div class="card-header">
+            {{ _self.ribbon_header(__("Geoblocking", 'moresecurity'), 'ti-world') }}
+        </div>
+        <div class="card-body">
+            <div class="row">
+        {{ fields.dropdownArrayField(
+            'geoblock_mode',
+            item.fields['geoblock_mode']|default('disabled'),
+            {
+                'disabled': __("Disabled", 'moresecurity'),
+                'allow': __("Only allow these countries", 'moresecurity'),
+                'deny': __("Block these countries", 'moresecurity'),
+            },
+            __("Mode", 'moresecurity'),
+            options
+        ) }}
+        {# Sent empty so deselecting every country clears the list #}
+        <input type="hidden" name="geoblock_countries[]" value="" />
+        {{ fields.dropdownArrayField(
+            'geoblock_countries',
+            '',
+            geoblock_country_choices,
+            __("Countries", 'moresecurity'),
             options|merge({
-                'display_emptychoice': false,
+                'multiple': true,
+                'values': geoblock_countries_selected,
             })
         ) }}
+        {% if not geoip_database_ready %}
+            <p class="text-warning mt-2">
+                {{ __("The GeoIP database has not been downloaded yet. It is fetched by the \"updatedb\" automatic action; until then geoblocking lets every login through.", 'moresecurity') }}
+            </p>
+        {% endif %}
+        <p class="text-muted mt-2">
+            {{ __("IP geolocation data by", 'moresecurity') }}
+            <a href="https://db-ip.com" target="_blank" rel="noopener">DB-IP</a>
+            ({{ __("CC BY 4.0", 'moresecurity') }})
+        </p>
+            </div>
+        </div>
+    </div>
     </div>
 
 </div>
 
+
 {{ include('components/form/buttons.html.twig') }}
+
+<script>
+    (function () {
+        var card = document.getElementById('ms-active-blocks-card');
+        if (!card) {
+            return;
+        }
+        // Los manejadores del botón "Filtrar" de GLPI solo existen en la pestaña
+        // de historial: aquí se recarga la pestaña con los filtros indicados.
+        function filterQuery() {
+            var parts = [];
+            card.querySelectorAll('.filter_row [name^="filters["]').forEach(function (input) {
+                if (input.value !== '') {
+                    parts.push(encodeURIComponent(input.name) + '=' + encodeURIComponent(input.value));
+                }
+            });
+            return parts.join('&');
+        }
+        var toggle = card.querySelector('.show_filters');
+        if (toggle) {
+            toggle.addEventListener('click', function (e) {
+                e.preventDefault();
+                reloadTab(card.querySelector('.filter_row') ? '' : 'filters[active]=1');
+            });
+        }
+        card.querySelectorAll('.filter_row input[type="text"]').forEach(function (input) {
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    reloadTab(filterQuery());
+                }
+            });
+        });
+    })();
+
+    document.querySelectorAll('#ms-active-blocks-card button[data-confirm]').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            var form = btn.closest('form');
+            if (btn.dataset.empty && !form.querySelector('.ms-unblock-checkbox:checked')) {
+                alert(btn.dataset.empty);
+                e.preventDefault();
+                return;
+            }
+            if (!confirm(btn.dataset.confirm)) {
+                e.preventDefault();
+            }
+        });
+    });
+</script>
