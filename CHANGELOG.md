@@ -1,7 +1,7 @@
 # Changelog
 <!-- changelog-format: 2 -->
 
-## [3.0.2-beta.1] - 2026/11/18
+## [3.0.2-beta.2] - 2026/11/18
 ### Features
 - Releases are now built and published automatically (GitHub release with the package) when `develop` is merged into `main`.
 
