@@ -1,9 +1,9 @@
 # Changelog
 <!-- changelog-format: 2 -->
 
-## [3.0.2-beta.2] - 2026/11/18
+## [3.0.2-beta.3] - 2026/11/18
 ### Features
-- Releases are now built and published automatically (GitHub release with the package) when `develop` is merged into `main`.
+- Releases are now built and published automatically (GitHub release with the package) when `develop` is merged into `main`. The release description and the comment of the package uploaded to GLPI carry the changelog entry of the version.
 
 ## [3.0.1]
 ### Bugs
