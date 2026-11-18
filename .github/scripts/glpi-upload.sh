@@ -11,6 +11,8 @@
 #   GLPI_APP_TOKEN      Optional application token of the API client.
 #   GLPI_INSECURE_TLS   "true" to accept self-signed certificates (tests only).
 #   RELEASE_URL         Optional, stored in the document comment.
+#   NAME                Plugin display name (e.g. "More Security"); the document
+#                       is named "<NAME> <version>". Defaults to the file name.
 
 set -euo pipefail
 
@@ -57,7 +59,9 @@ trap 'kill_session; rm -rf "$tmp"' EXIT
 comment="Package built by GitHub Actions."
 [ -n "${RELEASE_URL:-}" ] && comment="${comment} Release: ${RELEASE_URL}"
 
-manifest=$(jq -nc --arg n "${name%.tar.bz2} (${version})" --arg c "$comment" --arg f "$name" \
+doc_name="${NAME:+${NAME} ${version}}"
+doc_name="${doc_name:-${name%.tar.bz2}}"
+manifest=$(jq -nc --arg n "$doc_name" --arg c "$comment" --arg f "$name" \
   '{input: {name: $n, comment: $c, _filename: [$f]}}')
 
 echo "Uploading ${name}"
