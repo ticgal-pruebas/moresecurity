@@ -1,6 +1,10 @@
 # Changelog
 <!-- changelog-format: 2 -->
 
+## [3.0.2-beta.1] - 2026/11/18
+### Features
+- Releases are now built and published automatically (GitHub release with the package) when `develop` is merged into `main`.
+
 ## [3.0.1]
 ### Bugs
 - Security review 05/11/2026: a CalDAV or API login attempt is now released only when GLPI actually authenticated that account. A request to an unrelated path containing `caldav.php`, or to a public API page carrying a username, can no longer reset an account's attempt counter or its IP budget.

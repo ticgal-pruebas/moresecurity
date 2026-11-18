@@ -1,0 +1,198 @@
+name: Release
+
+# Creates a GitHub release (tag + notes + package) when a pull request from
+# `develop` is merged into `main`, then uploads the package to a GLPI instance.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Package and publish release
+    # Only merged PRs, from develop, coming from this very repository (never a fork)
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'develop' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create tag + release
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      package: ${{ steps.package.outputs.file }}
+    steps:
+      - name: Checkout merge commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+          # The plugin folder name must match the plugin key: tools/make_release.sh
+          # derives the package name from it.
+          path: ${{ github.event.repository.name }}
+
+      - name: Read plugin metadata
+        id: meta
+        env:
+          PLUGIN: ${{ github.event.repository.name }}
+        working-directory: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          const_name="PLUGIN_$(echo "$PLUGIN" | tr '[:lower:]' '[:upper:]')_VERSION"
+          version=$(grep -oP "define\('${const_name}',\s*'\K[^']+" setup.php | head -n1)
+          if [ -z "$version" ]; then
+            echo "::error::Could not read ${const_name} from setup.php"
+            exit 1
+          fi
+          if ! echo "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "::error::Version '$version' is not valid semver"
+            exit 1
+          fi
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "version=$version"
+            echo "tag=$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Plugin $PLUGIN version $version (prerelease: $prerelease)"
+
+      - name: Fail if the tag already exists
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists. Bump the plugin version in setup.php before merging into main."
+            exit 1
+          fi
+
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        working-directory: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          # Section "## [VERSION]" up to the next "## [" heading.
+          awk -v v="$VERSION" '
+            /^## \[/ { if (found) exit; if (index($0, "## [" v "]") == 1) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+            echo "::warning::No CHANGELOG.md section found for ${VERSION}; using the PR title."
+            printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/notes.md"
+          fi
+          printf '\n\nMerged through #%s.\n' "$PR_NUMBER" >> "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+          coverage: none
+
+      - name: Build package
+        id: package
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          PLUGIN: ${{ github.event.repository.name }}
+        working-directory: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          # Reuse the project's own packaging script so CI and manual releases match.
+          bash tools/make_release.sh "$VERSION" < /dev/null
+          file="/tmp/glpi-${PLUGIN}-${VERSION}.tar.bz2"
+          test -s "$file"
+          mkdir -p "$RUNNER_TEMP/dist"
+          mv "$file" "$RUNNER_TEMP/dist/"
+          (cd "$RUNNER_TEMP/dist" && sha256sum "$(basename "$file")" > "$(basename "$file").sha256")
+          echo "file=$(basename "$file")" >> "$GITHUB_OUTPUT"
+          echo "dir=$RUNNER_TEMP/dist" >> "$GITHUB_OUTPUT"
+          ls -l "$RUNNER_TEMP/dist"
+          # make_release.sh does not fail when composer fails, so verify the content.
+          listing="$RUNNER_TEMP/package-listing.txt"
+          tar tjf "$RUNNER_TEMP/dist/$(basename "$file")" > "$listing"
+          for required in "${PLUGIN}/setup.php" "${PLUGIN}/hook.php"; do
+            grep -qx "$required" "$listing" || { echo "::error::Package is missing $required"; exit 1; }
+          done
+          if grep -q '^[^/]*/composer.json$' "$listing"; then
+            grep -Eq "^${PLUGIN}/(public/)?vendor/autoload.php$" "$listing" \
+              || { echo "::error::Package has no vendor/autoload.php (composer install failed?)"; exit 1; }
+          fi
+          if grep -Eq "^${PLUGIN}/(\.github|tools|docs|tests)(/|$)|/phpunit/|^${PLUGIN}/\.gitleaks\.toml$" "$listing"; then
+            echo "::error::Package contains development files"
+            grep -E "^${PLUGIN}/(\.github|tools|docs|tests)(/|$)" "$listing" | head
+            exit 1
+          fi
+          wc -l "$listing"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          TARGET: ${{ github.event.pull_request.merge_commit_sha }}
+          PLUGIN: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY" --target "$TARGET" --title "${PLUGIN} ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md")
+          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          gh release create "$TAG" "${args[@]}" "$RUNNER_TEMP/dist/"*
+
+      - name: Keep the package for the GLPI upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: ${{ runner.temp }}/dist/*.tar.bz2
+          if-no-files-found: error
+          retention-days: 1
+
+  upload-glpi:
+    name: Upload package to GLPI
+    needs: release
+    # Runs on a self-hosted runner that can reach the GLPI instance.
+    runs-on: [self-hosted, glpi-local]
+    if: vars.GLPI_URL != ''
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout upload script (merged code, only .github/scripts)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: dist
+
+      - name: Upload to GLPI
+        env:
+          GLPI_URL: ${{ vars.GLPI_URL }}
+          GLPI_USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
+          GLPI_APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
+          GLPI_INSECURE_TLS: ${{ vars.GLPI_INSECURE_TLS }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag }}
+          PACKAGE: ${{ needs.release.outputs.package }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/glpi-upload.sh "dist/${PACKAGE}" "${VERSION}"
