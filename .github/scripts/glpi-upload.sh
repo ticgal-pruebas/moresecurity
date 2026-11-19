@@ -1,62 +1,85 @@
 #!/usr/bin/env bash
 #
-# Uploads a plugin package to GLPI as a Document, through the legacy REST API
-# (the High-Level API has no endpoint to upload file contents).
+# Uploads a plugin package to GLPI as a Document attached to the plugin's Software,
+# through the High-Level API (v2) route that Gapp Xtended adds:
+#   POST /api.php/v2.3/Gapp/Assets/Software/{id}/Document
+# (the core's own POST /Management/Document leaves the document empty).
+# The document's entity and recursion are taken from the Software by the route.
 #
 # Usage: glpi-upload.sh <package-file> <version>
 #
 # Environment:
-#   GLPI_URL            Base URL of the GLPI instance, without trailing slash.
-#   GLPI_USER_TOKEN     API token (remote access key) of the GLPI user.
-#   GLPI_APP_TOKEN      Optional application token of the API client.
-#   GLPI_INSECURE_TLS   "true" to accept self-signed certificates (tests only).
-#   RELEASE_URL         Optional, link to the GitHub release, stored in the document's
-#                       "Web link" field (must be a valid URL, 255 characters at most).
-#   NOTES_FILE          Optional, changelog entry used as the document comment.
-#   NAME                Plugin display name (e.g. "More Security"); the document
-#                       is named "<NAME> <version>". Defaults to the file name.
+#   GLPI_URL             Base URL of the GLPI instance, without trailing slash.
+#   GLPI_CLIENT_ID       Identifier of the OAuth client (password grant, scope "api").
+#   GLPI_CLIENT_SECRET   Secret of the OAuth client.
+#   GLPI_USERNAME        Login of the GLPI service user (needs software read/update
+#                        and document create rights).
+#   GLPI_PASSWORD        Password of that user.
+#   GLPI_SOFTWARE_ID     Id of the plugin's Software in GLPI.
+#   GLPI_INSECURE_TLS    "true" to accept self-signed certificates (tests only).
+#   RELEASE_URL          Optional, link to the GitHub release, stored in the document's
+#                        "Web link" field (must be a valid URL, 255 characters at most).
+#   NOTES_FILE           Optional, changelog entry used as the document comment.
+#   NAME                 Plugin display name (e.g. "More Security"); the document
+#                        is named "<NAME> <version>". Defaults to the file name.
 
 set -euo pipefail
 
 file=${1:?package file required}
 version=${2:?version required}
 : "${GLPI_URL:?GLPI_URL is not set}"
-: "${GLPI_USER_TOKEN:?GLPI_USER_TOKEN is not set}"
+: "${GLPI_CLIENT_ID:?GLPI_CLIENT_ID is not set}"
+: "${GLPI_CLIENT_SECRET:?GLPI_CLIENT_SECRET is not set}"
+: "${GLPI_USERNAME:?GLPI_USERNAME is not set}"
+: "${GLPI_PASSWORD:?GLPI_PASSWORD is not set}"
+: "${GLPI_SOFTWARE_ID:?GLPI_SOFTWARE_ID is not set}"
 
+[[ "$GLPI_SOFTWARE_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::GLPI_SOFTWARE_ID must be a positive integer"; exit 1; }
 [ -s "$file" ] || { echo "::error::Package $file not found or empty"; exit 1; }
 
-base="${GLPI_URL%/}/apirest.php"
+base="${GLPI_URL%/}/api.php"
 name=$(basename "$file")
 
 curl_opts=(--silent --show-error --max-time 120)
 [ "${GLPI_INSECURE_TLS:-false}" = "true" ] && curl_opts+=(--insecure)
 
-headers=()
-[ -n "${GLPI_APP_TOKEN:-}" ] && headers+=(-H "App-Token: ${GLPI_APP_TOKEN}")
-
-# The token must never reach the logs, even if it were echoed back.
-echo "::add-mask::${GLPI_USER_TOKEN}"
-[ -n "${GLPI_APP_TOKEN:-}" ] && echo "::add-mask::${GLPI_APP_TOKEN}"
+# Secrets must never reach the logs, even if something echoed them back.
+for secret in "$GLPI_CLIENT_ID" "$GLPI_CLIENT_SECRET" "$GLPI_USERNAME" "$GLPI_PASSWORD"; do
+  echo "::add-mask::${secret}"
+done
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "Opening GLPI API session on ${GLPI_URL%/}"
-code=$(curl "${curl_opts[@]}" -o "$tmp/session.json" -w '%{http_code}' \
-  "${headers[@]}" -H "Authorization: user_token ${GLPI_USER_TOKEN}" \
-  "${base}/initSession")
+echo "Requesting an OAuth token from ${GLPI_URL%/}"
+# Credentials go through temporary files (name@file), not through the command line,
+# so they never show up in the process list.
+printf '%s' "$GLPI_CLIENT_ID"     > "$tmp/client_id"
+printf '%s' "$GLPI_CLIENT_SECRET" > "$tmp/client_secret"
+printf '%s' "$GLPI_USERNAME"      > "$tmp/username"
+printf '%s' "$GLPI_PASSWORD"      > "$tmp/password"
+auth_args=(
+  --data-urlencode "grant_type=password" --data-urlencode "scope=api"
+  --data-urlencode "client_id@$tmp/client_id" --data-urlencode "client_secret@$tmp/client_secret"
+  --data-urlencode "username@$tmp/username" --data-urlencode "password@$tmp/password"
+)
+code=$(curl "${curl_opts[@]}" -o "$tmp/token.json" -w '%{http_code}' "${auth_args[@]}" "${base}/token")
 if [ "$code" != "200" ]; then
-  echo "::error::initSession failed (HTTP $code): $(head -c 300 "$tmp/session.json")"
+  echo "::error::Token request failed (HTTP $code): $(jq -r '.error_description // .error // empty' "$tmp/token.json" 2>/dev/null || true)"
   exit 1
 fi
-session=$(jq -r '.session_token // empty' "$tmp/session.json")
-[ -n "$session" ] || { echo "::error::initSession returned no session_token"; exit 1; }
-echo "::add-mask::${session}"
+token=$(jq -r '.access_token // empty' "$tmp/token.json")
+[ -n "$token" ] || { echo "::error::The token response has no access_token"; exit 1; }
+echo "::add-mask::${token}"
+auth_header="Authorization: Bearer ${token}"
 
-kill_session() {
-  curl "${curl_opts[@]}" -o /dev/null "${headers[@]}" -H "Session-Token: ${session}" "${base}/killSession" || true
-}
-trap 'kill_session; rm -rf "$tmp"' EXIT
+# A server without Gapp Xtended 4.0.0-beta.20 would accept the request and drop the
+# comment and the web link: refuse to upload there.
+code=$(curl "${curl_opts[@]}" -o "$tmp/caps.json" -w '%{http_code}' -H "$auth_header" "${base}/v2.3/Gapp/Capabilities")
+if [ "$code" != "200" ] || [ "$(jq -r '.features.software_document_details // false' "$tmp/caps.json")" != "true" ]; then
+  echo "::error::GLPI does not offer the Software document upload with comment and link (Gapp Xtended >= 4.0.0-beta.20 is required). Capabilities HTTP $code."
+  exit 1
+fi
 
 # Comment = changelog entry of the version.
 # The comment column is TEXT (65535 bytes): an entry above the safe limit is cut
@@ -78,20 +101,30 @@ fi
 
 doc_name="${NAME:+${NAME} ${version}}"
 doc_name="${doc_name:-${name%.tar.bz2}}"
-manifest=$(jq -nc --arg n "$doc_name" --arg c "$comment" --arg f "$name" --arg l "${RELEASE_URL:-}" \
-  '{input: ({name: $n, comment: $c, _filename: [$f]} + (if $l == "" then {} else {link: $l} end))}')
 
-echo "Uploading ${name}"
-code=$(curl "${curl_opts[@]}" -o "$tmp/doc.json" -w '%{http_code}' \
-  "${headers[@]}" -H "Session-Token: ${session}" \
-  -F "uploadManifest=${manifest};type=application/json" \
-  -F "filename[0]=@${file}" \
-  "${base}/Document")
+# Optional fields go in with --form-string so that no value is read as a file or an option.
+form=(-F "file=@${file}" --form-string "name=${doc_name}" --form-string "comment=${comment}")
+[ -n "${RELEASE_URL:-}" ] && form+=(--form-string "link=${RELEASE_URL}")
+
+echo "Uploading ${name} to Software #${GLPI_SOFTWARE_ID}"
+code=$(curl "${curl_opts[@]}" -o "$tmp/doc.json" -w '%{http_code}' -H "$auth_header" \
+  "${form[@]}" "${base}/v2.3/Gapp/Assets/Software/${GLPI_SOFTWARE_ID}/Document")
 
 if [ "$code" != "201" ]; then
   echo "::error::Document upload failed (HTTP $code): $(head -c 500 "$tmp/doc.json")"
   exit 1
 fi
 
-id=$(jq -r '.id // empty' "$tmp/doc.json")
-echo "Uploaded to GLPI as Document #${id:-?}"
+# A 201 without documents_id is the core's empty creation, not a success.
+id=$(jq -r '.documents_id // empty' "$tmp/doc.json")
+[ -n "$id" ] || { echo "::error::GLPI answered 201 without documents_id; the upload cannot be trusted: $(head -c 300 "$tmp/doc.json")"; exit 1; }
+
+# GLPI stores the file and reports its SHA-1: it must be the one of the package.
+expected=$(sha1sum "$file" | cut -d' ' -f1)
+actual=$(jq -r '.sha1sum // empty' "$tmp/doc.json")
+if [ "$actual" != "$expected" ]; then
+  echo "::error::Document #${id} was created but its SHA-1 (${actual:-none}) is not the package's (${expected})."
+  exit 1
+fi
+
+echo "Uploaded to GLPI as Document #${id} of Software #${GLPI_SOFTWARE_ID}"

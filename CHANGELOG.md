@@ -1,9 +1,10 @@
 # Changelog
 <!-- changelog-format: 2 -->
 
-## [3.0.2-beta.3] - 2026/11/18
+## [3.0.3] - 2026/11/19
 ### Features
 - Releases are now built and published automatically (GitHub release with the package) when `develop` is merged into `main`. The release description and the comment of the package uploaded to GLPI carry the changelog entry of the version.
+- The package is uploaded to the plugin's Software in GLPI through the High-Level API (Gapp Xtended), no longer through the legacy REST API.
 
 ## [3.0.1]
 ### Bugs
