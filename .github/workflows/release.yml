@@ -237,6 +237,25 @@ jobs:
           set -euo pipefail
           bash .github/scripts/glpi-upload.sh "dist/${PACKAGE}" "${VERSION}"
 
+      # Only reached when the upload worked (or the package was already in GLPI): the
+      # runner keeps the last package that made it, replacing the previous one, so a
+      # failed later release never leaves it without a known-good copy to recover from.
+      # Where: repository variable GLPI_KEEP_DIR, by default ~/.cache/glpi-release-packages.
+      - name: Keep the last uploaded package on the runner
+        env:
+          PACKAGE: ${{ needs.release.outputs.package }}
+          KEEP_ROOT: ${{ vars.GLPI_KEEP_DIR }}
+        run: |
+          set -euo pipefail
+          root="${KEEP_ROOT:-$HOME/.cache/glpi-release-packages}"
+          dest="${root}/${GITHUB_REPOSITORY#*/}"
+          : "${dest:?}"
+          mkdir -p "$dest"
+          cp "dist/${PACKAGE}" "${dest}/.incoming"
+          find "$dest" -maxdepth 1 -type f ! -name .incoming -delete
+          mv "${dest}/.incoming" "${dest}/${PACKAGE}"
+          echo "Kept ${dest}/${PACKAGE}"
+
       # The runner is ours and its workspace outlives the job: leave nothing of the
       # package, the notes or the checkout behind, whatever the outcome.
       - name: Clean the runner workspace
