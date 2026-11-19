@@ -217,9 +217,15 @@ jobs:
       - name: Upload to GLPI
         env:
           GLPI_URL: ${{ vars.GLPI_URL }}
-          GLPI_USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
-          GLPI_APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
+          GLPI_CLIENT_ID: ${{ secrets.GLPI_CLIENT_ID }}
+          GLPI_CLIENT_SECRET: ${{ secrets.GLPI_CLIENT_SECRET }}
+          GLPI_USERNAME: ${{ secrets.GLPI_USERNAME }}
+          GLPI_PASSWORD: ${{ secrets.GLPI_PASSWORD }}
           GLPI_INSECURE_TLS: ${{ vars.GLPI_INSECURE_TLS }}
+          # Plugin -> GLPI mapping: id of this plugin's Software in the GLPI that
+          # receives the packages. The document takes its entity and recursion
+          # from that Software. Set this value when adopting the workflow.
+          GLPI_SOFTWARE_ID: "1"
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag }}
           PACKAGE: ${{ needs.release.outputs.package }}
           VERSION: ${{ needs.release.outputs.version }}
