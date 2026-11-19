@@ -1,6 +1,10 @@
 # Changelog
 <!-- changelog-format: 2 -->
 
+## [3.0.4-test.2] - 2026/11/19
+### Features
+- Test release: Node 24 actions, idempotent GLPI upload and a one-word plugin name.
+
 ## [3.0.3] - 2026/11/19
 ### Features
 - Releases are now built and published automatically (GitHub release with the package) when `develop` is merged into `main`. The release description and the comment of the package uploaded to GLPI carry the changelog entry of the version.
