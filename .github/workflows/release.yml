@@ -236,3 +236,12 @@ jobs:
         run: |
           set -euo pipefail
           bash .github/scripts/glpi-upload.sh "dist/${PACKAGE}" "${VERSION}"
+
+      # The runner is ours and its workspace outlives the job: leave nothing of the
+      # package, the notes or the checkout behind, whatever the outcome.
+      - name: Clean the runner workspace
+        if: always()
+        run: |
+          set -euo pipefail
+          : "${GITHUB_WORKSPACE:?}"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
