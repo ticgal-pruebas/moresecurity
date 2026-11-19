@@ -51,6 +51,10 @@ done
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# First 300 characters of a response body, on one line and without HTML tags
+# (a proxy or PHP limit answers with a whole page).
+excerpt() { tr '\n' ' ' < "$1" | sed -e 's/<[^>]*>//g' -e 's/  */ /g' | cut -c1-300; }
+
 echo "Requesting an OAuth token from ${GLPI_URL%/}"
 # Credentials go through temporary files (name@file), not through the command line,
 # so they never show up in the process list.
@@ -63,9 +67,10 @@ auth_args=(
   --data-urlencode "client_id@$tmp/client_id" --data-urlencode "client_secret@$tmp/client_secret"
   --data-urlencode "username@$tmp/username" --data-urlencode "password@$tmp/password"
 )
-code=$(curl "${curl_opts[@]}" -o "$tmp/token.json" -w '%{http_code}' "${auth_args[@]}" "${base}/token")
+code=$(curl "${curl_opts[@]}" -o "$tmp/token.json" -w '%{http_code}' "${auth_args[@]}" "${base}/token") \
+  || { echo "::error::Could not reach ${GLPI_URL%/} to request the token (curl exit $?)"; exit 1; }
 if [ "$code" != "200" ]; then
-  echo "::error::Token request failed (HTTP $code): $(jq -r '.error_description // .error // empty' "$tmp/token.json" 2>/dev/null || true)"
+  echo "::error::Token request failed (HTTP $code): $(jq -r '.error_description // .error // empty' "$tmp/token.json" 2>/dev/null || excerpt "$tmp/token.json")"
   exit 1
 fi
 token=$(jq -r '.access_token // empty' "$tmp/token.json")
@@ -75,8 +80,9 @@ auth_header="Authorization: Bearer ${token}"
 
 # A server without Gapp Xtended 4.0.0-beta.20 would accept the request and drop the
 # comment and the web link: refuse to upload there.
-code=$(curl "${curl_opts[@]}" -o "$tmp/caps.json" -w '%{http_code}' -H "$auth_header" "${base}/v2.3/Gapp/Capabilities")
-if [ "$code" != "200" ] || [ "$(jq -r '.features.software_document_details // false' "$tmp/caps.json")" != "true" ]; then
+code=$(curl "${curl_opts[@]}" -o "$tmp/caps.json" -w '%{http_code}' -H "$auth_header" "${base}/v2.3/Gapp/Capabilities") \
+  || { echo "::error::Could not reach GLPI to read its capabilities (curl exit $?)"; exit 1; }
+if [ "$code" != "200" ] || [ "$(jq -r '.features.software_document_details // false' "$tmp/caps.json" 2>/dev/null || true)" != "true" ]; then
   echo "::error::GLPI does not offer the Software document upload with comment and link (Gapp Xtended >= 4.0.0-beta.20 is required). Capabilities HTTP $code."
   exit 1
 fi
@@ -108,16 +114,21 @@ form=(-F "file=@${file}" --form-string "name=${doc_name}" --form-string "comment
 
 echo "Uploading ${name} to Software #${GLPI_SOFTWARE_ID}"
 code=$(curl "${curl_opts[@]}" -o "$tmp/doc.json" -w '%{http_code}' -H "$auth_header" \
-  "${form[@]}" "${base}/v2.3/Gapp/Assets/Software/${GLPI_SOFTWARE_ID}/Document")
+  "${form[@]}" "${base}/v2.3/Gapp/Assets/Software/${GLPI_SOFTWARE_ID}/Document") \
+  || { echo "::error::The upload to GLPI was interrupted (curl exit $?)"; exit 1; }
 
+if [ "$code" = "413" ]; then
+  echo "::error::GLPI refused the package as too large (HTTP 413): $(wc -c < "$file") bytes; check upload_max_filesize and post_max_size of the GLPI server (GET /Gapp/Documents/Constraints reports max_size)."
+  exit 1
+fi
 if [ "$code" != "201" ]; then
-  echo "::error::Document upload failed (HTTP $code): $(head -c 500 "$tmp/doc.json")"
+  echo "::error::Document upload failed (HTTP $code): $(excerpt "$tmp/doc.json")"
   exit 1
 fi
 
 # A 201 without documents_id is the core's empty creation, not a success.
 id=$(jq -r '.documents_id // empty' "$tmp/doc.json")
-[ -n "$id" ] || { echo "::error::GLPI answered 201 without documents_id; the upload cannot be trusted: $(head -c 300 "$tmp/doc.json")"; exit 1; }
+[ -n "$id" ] || { echo "::error::GLPI answered 201 without documents_id; the upload cannot be trusted: $(excerpt "$tmp/doc.json")"; exit 1; }
 
 # GLPI stores the file and reports its SHA-1: it must be the one of the package.
 expected=$(sha1sum "$file" | cut -d' ' -f1)
