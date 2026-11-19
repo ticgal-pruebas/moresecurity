@@ -16,6 +16,10 @@
 #                        and document create rights).
 #   GLPI_PASSWORD        Password of that user.
 #   GLPI_SOFTWARE_ID     Id of the plugin's Software in GLPI.
+#   GLPI_DOCUMENT_CATEGORY_ID  Optional, id of the document heading ("TICGAL Plugins")
+#                        given to the document. Needs the update right on documents.
+#   GLPI_REQUEST_TIMEOUT / GLPI_UPLOAD_TIMEOUT  Seconds allowed to each request (default
+#                        60) and to the file upload (default 600).
 #   GLPI_INSECURE_TLS    "true" to accept self-signed certificates (tests only).
 #   RELEASE_URL          Optional, link to the GitHub release, stored in the document's
 #                        "Web link" field (must be a valid URL, 255 characters at most).
@@ -35,12 +39,15 @@ version=${2:?version required}
 : "${GLPI_SOFTWARE_ID:?GLPI_SOFTWARE_ID is not set}"
 
 [[ "$GLPI_SOFTWARE_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::GLPI_SOFTWARE_ID must be a positive integer"; exit 1; }
+if [ -n "${GLPI_DOCUMENT_CATEGORY_ID:-}" ]; then
+  [[ "$GLPI_DOCUMENT_CATEGORY_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::GLPI_DOCUMENT_CATEGORY_ID must be a positive integer"; exit 1; }
+fi
 [ -s "$file" ] || { echo "::error::Package $file not found or empty"; exit 1; }
 
 base="${GLPI_URL%/}/api.php"
 name=$(basename "$file")
 
-curl_opts=(--silent --show-error --max-time 120)
+curl_opts=(--silent --show-error --connect-timeout 20 --max-time "${GLPI_REQUEST_TIMEOUT:-60}")
 [ "${GLPI_INSECURE_TLS:-false}" = "true" ] && curl_opts+=(--insecure)
 
 # Secrets must never reach the logs, even if something echoed them back.
@@ -67,8 +74,13 @@ auth_args=(
   --data-urlencode "client_id@$tmp/client_id" --data-urlencode "client_secret@$tmp/client_secret"
   --data-urlencode "username@$tmp/username" --data-urlencode "password@$tmp/password"
 )
-code=$(curl "${curl_opts[@]}" -o "$tmp/token.json" -w '%{http_code}' "${auth_args[@]}" "${base}/token") \
+code=$(curl "${curl_opts[@]}" -D "$tmp/token.headers" -o "$tmp/token.json" -w '%{http_code}' "${auth_args[@]}" "${base}/token") \
   || { echo "::error::Could not reach ${GLPI_URL%/} to request the token (curl exit $?)"; exit 1; }
+if [[ "$code" =~ ^3 ]]; then
+  # Never follow it: the credentials would be sent again to wherever it points.
+  echo "::error::${GLPI_URL%/} redirects (HTTP $code) to $(tr -d '\r' < "$tmp/token.headers" | sed -n 's/^[Ll]ocation: //p' | head -n1 || true); set GLPI_URL to the final address."
+  exit 1
+fi
 if [ "$code" != "200" ]; then
   echo "::error::Token request failed (HTTP $code): $(jq -r '.error_description // .error // empty' "$tmp/token.json" 2>/dev/null || excerpt "$tmp/token.json")"
   exit 1
@@ -105,6 +117,27 @@ if [ "$(wc -c <<<"$comment")" -gt "$max_bytes" ]; then
 fi
 [ "$truncated" = "true" ] && comment="${comment}"$'\n'"[...] truncated, the full text is in the GitHub release"
 
+# Document heading: the Xtended route does not take it, so it is set afterwards with the
+# core API. GLPI answers 200 even for a heading that does not exist, hence the check.
+set_category() {
+  local docid=$1
+  [ -n "${GLPI_DOCUMENT_CATEGORY_ID:-}" ] || return 0
+  local c
+  c=$(curl "${curl_opts[@]}" -X PATCH -H "$auth_header" -H 'Content-Type: application/json' \
+    --data "{\"category\":{\"id\":${GLPI_DOCUMENT_CATEGORY_ID}}}" -o "$tmp/category.json" -w '%{http_code}' \
+    "${base}/v2.3/Management/Document/${docid}") \
+    || { echo "::error::Could not set the heading of Document #${docid} (curl exit $?)"; exit 1; }
+  if [ "$c" != "200" ]; then
+    echo "::error::Setting the heading of Document #${docid} failed (HTTP $c): $(excerpt "$tmp/category.json"). The document exists; fix the cause and re-run the job."
+    exit 1
+  fi
+  if [ "$(jq -r '.category.id // empty' "$tmp/category.json")" != "$GLPI_DOCUMENT_CATEGORY_ID" ]; then
+    echo "::error::Document #${docid} did not get the heading ${GLPI_DOCUMENT_CATEGORY_ID}: does it exist, and may the user see it? Re-run the job after fixing it."
+    exit 1
+  fi
+  echo "Document #${docid} filed under the heading #${GLPI_DOCUMENT_CATEGORY_ID}"
+}
+
 # Idempotency: GLPI does not reject a second document with the same file, so a
 # re-run of this job would duplicate it. Look for the file name first (it is built
 # from the plugin key and the version; only safe characters go into the filter).
@@ -121,6 +154,7 @@ if [[ "$name" =~ ^[A-Za-z0-9._+-]+$ ]]; then
   other=$(jq -r --arg s "$expected" '[.[] | select((.is_deleted // false) == false and .sha1sum != $s)] | first | .id // empty' "$tmp/existing.json")
   if [ -n "$same" ]; then
     echo "::notice::${name} is already in GLPI as Document #${same} (same SHA-1); nothing to upload."
+    set_category "$same"
     exit 0
   fi
   if [ -n "$other" ]; then
@@ -139,9 +173,9 @@ form=(-F "file=@${file}" --form-string "name=${doc_name}" --form-string "comment
 [ -n "${RELEASE_URL:-}" ] && form+=(--form-string "link=${RELEASE_URL}")
 
 echo "Uploading ${name} to Software #${GLPI_SOFTWARE_ID}"
-code=$(curl "${curl_opts[@]}" -o "$tmp/doc.json" -w '%{http_code}' -H "$auth_header" \
+code=$(curl "${curl_opts[@]}" --max-time "${GLPI_UPLOAD_TIMEOUT:-600}" -o "$tmp/doc.json" -w '%{http_code}' -H "$auth_header" \
   "${form[@]}" "${base}/v2.3/Gapp/Assets/Software/${GLPI_SOFTWARE_ID}/Document") \
-  || { echo "::error::The upload to GLPI was interrupted (curl exit $?)"; exit 1; }
+  || { rc=$?; echo "::error::The upload to GLPI was interrupted (curl exit ${rc}$([ "$rc" = 28 ] && echo ', timeout: raise GLPI_UPLOAD_TIMEOUT' || true))"; exit 1; }
 
 if [ "$code" = "413" ]; then
   echo "::error::GLPI refused the package as too large (HTTP 413): $(wc -c < "$file") bytes; check upload_max_filesize and post_max_size of the GLPI server (GET /Gapp/Documents/Constraints reports max_size)."
@@ -164,3 +198,4 @@ if [ "$actual" != "$expected" ]; then
 fi
 
 echo "Uploaded to GLPI as Document #${id} of Software #${GLPI_SOFTWARE_ID}"
+set_category "$id"
