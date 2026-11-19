@@ -225,7 +225,7 @@ jobs:
           # Plugin -> GLPI mapping: id of this plugin's Software in the GLPI that
           # receives the packages. The document takes its entity and recursion
           # from that Software. Set this value when adopting the workflow.
-          GLPI_SOFTWARE_ID: "999"
+          GLPI_SOFTWARE_ID: "1"
           # Id of the document heading the package is filed under ("TICGAL Plugins").
           GLPI_DOCUMENT_CATEGORY_ID: "1"
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag }}
