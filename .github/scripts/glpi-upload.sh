@@ -105,6 +105,32 @@ if [ "$(wc -c <<<"$comment")" -gt "$max_bytes" ]; then
 fi
 [ "$truncated" = "true" ] && comment="${comment}"$'\n'"[...] truncated, the full text is in the GitHub release"
 
+# Idempotency: GLPI does not reject a second document with the same file, so a
+# re-run of this job would duplicate it. Look for the file name first (it is built
+# from the plugin key and the version; only safe characters go into the filter).
+expected=$(sha1sum "$file" | cut -d' ' -f1)
+if [[ "$name" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+  code=$(curl "${curl_opts[@]}" -G -o "$tmp/existing.json" -w '%{http_code}' -H "$auth_header" \
+    --data-urlencode "filter=filename==\"${name}\"" "${base}/v2.3/Management/Document") \
+    || { echo "::error::Could not reach GLPI to look for an existing document (curl exit $?)"; exit 1; }
+  if [ "$code" != "200" ]; then
+    echo "::error::Looking for an existing document failed (HTTP $code): $(excerpt "$tmp/existing.json")"
+    exit 1
+  fi
+  same=$(jq -r --arg s "$expected" '[.[] | select((.is_deleted // false) == false and .sha1sum == $s)] | first | .id // empty' "$tmp/existing.json")
+  other=$(jq -r --arg s "$expected" '[.[] | select((.is_deleted // false) == false and .sha1sum != $s)] | first | .id // empty' "$tmp/existing.json")
+  if [ -n "$same" ]; then
+    echo "::notice::${name} is already in GLPI as Document #${same} (same SHA-1); nothing to upload."
+    exit 0
+  fi
+  if [ -n "$other" ]; then
+    echo "::error::GLPI already has a document named ${name} (Document #${other}) with different content. Delete it in GLPI or bump the version."
+    exit 1
+  fi
+else
+  echo "::warning::File name '${name}' has unusual characters; skipping the duplicate check."
+fi
+
 doc_name="${NAME:+${NAME} ${version}}"
 doc_name="${doc_name:-${name%.tar.bz2}}"
 
@@ -131,7 +157,6 @@ id=$(jq -r '.documents_id // empty' "$tmp/doc.json")
 [ -n "$id" ] || { echo "::error::GLPI answered 201 without documents_id; the upload cannot be trusted: $(excerpt "$tmp/doc.json")"; exit 1; }
 
 # GLPI stores the file and reports its SHA-1: it must be the one of the package.
-expected=$(sha1sum "$file" | cut -d' ' -f1)
 actual=$(jq -r '.sha1sum // empty' "$tmp/doc.json")
 if [ "$actual" != "$expected" ]; then
   echo "::error::Document #${id} was created but its SHA-1 (${actual:-none}) is not the package's (${expected})."
