@@ -33,7 +33,7 @@ jobs:
       package: ${{ steps.package.outputs.file }}
     steps:
       - name: Checkout merge commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
@@ -54,8 +54,8 @@ jobs:
             echo "::error::Could not read ${const_name} from setup.php"
             exit 1
           fi
-          if ! echo "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
-            echo "::error::Version '$version' is not valid semver"
+          if ! echo "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "::error::Version '$version' is not valid (use MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-prerelease; build metadata with '+' is not accepted in tags)"
             exit 1
           fi
           # Display name: the literal 'name' of plugin_version_<key>() in setup.php
@@ -171,7 +171,7 @@ jobs:
           gh release create "$TAG" "${args[@]}" "$RUNNER_TEMP/dist/"*
 
       - name: Keep the package for the GLPI upload job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: package
           path: ${{ runner.temp }}/dist/*.tar.bz2
@@ -179,7 +179,7 @@ jobs:
           retention-days: 1
 
       - name: Keep the changelog entry for the GLPI upload job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: changelog
           path: ${{ runner.temp }}/changelog.md
@@ -196,20 +196,20 @@ jobs:
       contents: read
     steps:
       - name: Checkout upload script (merged code, only .github/scripts)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           sparse-checkout: .github/scripts
           sparse-checkout-cone-mode: false
 
       - name: Download package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: package
           path: dist
 
       - name: Download changelog entry
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: changelog
           path: notes
