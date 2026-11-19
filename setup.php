@@ -43,14 +43,14 @@ if (file_exists(__DIR__ . '/vendor/autoload.php')) {
     include_once __DIR__ . '/vendor/autoload.php';
 }
 
-define('PLUGIN_MORESECURITY_VERSION', '3.0.3');
+define('PLUGIN_MORESECURITY_VERSION', '3.0.4-test.2');
 define('PLUGIN_MORESECURITY_MIN_GLPI', '12.0.0');
 define('PLUGIN_MORESECURITY_MAX_GLPI', '12.1.0');
 
 function plugin_version_moresecurity()
 {
     return [
-        'name' => 'More Security',
+        'name' => 'Moresec',
         'version' => PLUGIN_MORESECURITY_VERSION,
         'author' => '<a href="https://tic.gal">TICGAL</a>',
         'homepage' => 'https://tic.gal',
