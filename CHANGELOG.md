@@ -1,6 +1,10 @@
 # Changelog
 <!-- changelog-format: 2 -->
 
+## [3.0.4-test.9] - 2026/11/24
+### Features
+- Test release: first upload of the package to the PRE GLPI (Software 216634, document category 31).
+
 ## [3.0.4-test.2] - 2026/11/19
 ### Features
 - Test release: Node 24 actions, idempotent GLPI upload and a one-word plugin name.
